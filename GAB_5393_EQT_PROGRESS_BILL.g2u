@@ -1,0 +1,365 @@
+﻿Program.Sub.ScreenSU.Start
+Gui.F_Order..Create
+Gui.F_Order..Caption("Order Lines to be Invoiced")
+Gui.F_Order..Size(16095,6150)
+Gui.F_Order..MinX(0)
+Gui.F_Order..MinY(0)
+Gui.F_Order..Position(0,0)
+Gui.F_Order..BackColor(-2147483633)
+Gui.F_Order..MousePointer(0)
+Gui.F_Order..Event(UnLoad,Unload)
+Gui.F_Order.GsGCLine.Create(GsGridControl)
+Gui.F_Order.GsGCLine.Size(15675,4845)
+Gui.F_Order.GsGCLine.Position(90,90)
+Gui.F_Order.GsGCLine.Event(CellValueChanged,GsGCLine_CellValueChanged)
+Gui.F_Order.cmdSave.Create(Button)
+Gui.F_Order.cmdSave.Size(1905,495)
+Gui.F_Order.cmdSave.Position(90,4995)
+Gui.F_Order.cmdSave.Caption("Save")
+Gui.F_Order.cmdSave.FontSize(9)
+Gui.F_Order.cmdSave.Event(Click,cmdSave_Click)
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+V.Global.dateOrder.Declare
+V.Global.sOrderLine.Declare
+V.Global.sOrderNo.Declare
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+V.Local.sIcon.Declare
+V.Local.sPart.Declare
+V.Local.bExist.Declare
+
+'Order line populate hook
+F.Intrinsic.Control.If(V.Caller.Hook,=,12010)
+	V.Passed.000210.Set("Invoice Lines")
+'Order line Script 3 hook
+F.Intrinsic.Control.ElseIf(V.Caller.Hook,=,12430)
+	V.Local.sPart.Set(V.Passed.000052)
+	F.Intrinsic.Control.If(V.Local.sPart.Trim,=,"PROGRESS")
+		F.ODBC.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+
+		F.Intrinsic.String.Build("{0}\ART\gss2.ico",V.Caller.GlobalDir,V.Local.sIcon)
+		Gui.F_Order..Icon(V.Local.sIcon)
+		
+		'Check if custom table exists
+		F.ODBC.Connection!conx.TableExists("GAB_5393_INVC_LINE",V.Local.bExist)
+		F.Intrinsic.Control.If(V.Local.bExist,=,False)
+			F.ODBC.Connection!Conx.Execute("CREATE TABLE GAB_5393_INVC_LINE ( ORDER_NO CHAR(7) NOT NULL, DATE_ORDER DATE NOT NULL, RECORD_NO CHAR(4) NOT NULL, LINE_NO CHAR(4) NOT NULL, INVOICE CHAR(6), PART CHAR(20), QTY_SHIPPED NUMERIC(13,4), PRICE NUMERIC(12,5), FLAG_BOM CHAR(1), BOM_PARENT CHAR(4) );")
+			F.ODBC.Connection!Conx.Execute("ALTER TABLE GAB_5393_INVC_LINE ADD CONSTRAINT PK_ORDER_NO PRIMARY KEY  ( ORDER_NO, DATE_ORDER, RECORD_NO, LINE_NO ) USING 0;")
+		F.Intrinsic.Control.EndIf
+
+		F.Intrinsic.Control.CallSub(LoadSOLines)
+
+		Gui.F_Order..Show
+	F.Intrinsic.Control.Else
+		F.Intrinsic.UI.Msgbox("Only for Progress Bill line")
+		F.Intrinsic.Control.End
+
+	F.Intrinsic.Control.EndIf
+'Order line post delete hook
+F.Intrinsic.Control.ElseIf(V.Caller.Hook,=,12242)
+	V.Local.sPart.Set(V.Passed.000052)
+	F.Intrinsic.Control.If(V.Local.sPart.Trim,=,"PROGRESS")
+		F.Intrinsic.Control.CallSub(CheckandDelete)
+	F.Intrinsic.Control.EndIf
+'BI report pre-process
+F.Intrinsic.Control.ElseIf(V.Caller.Hook,=,16090)
+	F.Intrinsic.Control.CallSub(BIReportCheck)
+'Invoicing populate hook
+F.Intrinsic.Control.ElseIf(V.Caller.Hook,=,34901)
+	V.Passed.000006.Set("Upd Progress")
+'Invoicing script 1 hook
+F.Intrinsic.Control.ElseIf(V.Caller.Hook,=,34910)
+	F.Intrinsic.Control.CallSub(UpdateInvoiceNo)
+F.Intrinsic.Control.EndIf
+Program.Sub.Main.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.If(V.DataTable.dtLine.Exists)
+	F.Data.DataTable.Close("dtLine")
+F.Intrinsic.Control.EndIf
+
+F.ODBC.Connection!conx.Close
+F.Intrinsic.Control.End
+
+Program.Sub.Unload.End
+
+Program.Sub.LoadSOLines.Start
+V.Local.dateOrder.Declare
+V.Local.fQty.Declare
+V.Local.fQtyInvoiced.Declare
+V.Local.i1.Declare
+V.Local.sSQL.Declare
+
+F.Intrinsic.String.LPad(V.Passed.000060,"0",7,V.Global.sOrderNo)
+F.Intrinsic.String.LPad(V.Passed.000051,"0",3,V.Global.sOrderLine)
+F.Intrinsic.String.Concat(V.Global.sOrderLine,"0",V.Global.sOrderLine)
+
+F.Intrinsic.String.Build("select date_order from v_order_header where order_no = '{0}'",V.Global.sOrderNo.Trim,V.Local.sSQL)
+F.ODBC.Connection!conx.OpenLocalRecordsetRO("rst",V.Local.sSQL)
+V.Global.dateOrder.Set(V.ODBC.conx!rst.FieldVal!date_order)
+F.ODBC.conx!rst.Close
+
+'Check if this SO line has been created for progress bill previously
+F.Intrinsic.String.Build("select * from GAB_5393_INVC_LINE where order_no = '{0}' and record_no = '{1}' and date_order = '{2}'",V.Global.sOrderNo.Trim,V.Global.sOrderLine.Trim,V.Global.dateOrder.PervasiveDate,V.Local.sSQL)
+F.ODBC.Connection!conx.OpenLocalRecordsetRO("rst",V.Local.sSQL)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	F.Intrinsic.UI.Msgbox("This progress bill line has been processed")
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.EndIf
+F.ODBC.conx!rst.Close
+
+'F.Intrinsic.String.Build("select record_no as Line, part as Part, description as Description, price_disc_ord as Price, qty_ordered as QtyOrder,flag_bom,case when flag_bom = 'Y' or flag_bom = 'N' then record_no else bom_parent end as flag_bom from v_order_lines where order_no = '{0}' and date_order = '{1}' and line_type <> 'P' order by record_no",V.Global.sOrderNo.Trim,V.Global.dateOrder.PervasiveDate,V.Local.sSQL)
+F.Intrinsic.String.Build("select record_no as Line, part as Part, description as Description, price_disc_ord as Price, qty_ordered as QtyOrder,flag_bom,bom_parent from v_order_lines where order_no = '{0}' and date_order = '{1}' and line_type <> 'P' order by record_no",V.Global.sOrderNo.Trim,V.Global.dateOrder.PervasiveDate,V.Local.sSQL)
+F.Data.DataTable.CreateFromSQL("dtLine","conx",V.Local.sSQL,True)
+
+F.Data.DataTable.AddColumn("dtLine","QtyInvoiced","Float",0)
+F.Data.DataTable.AddColumn("dtLine","Qty","Float",0)
+F.Data.DataTable.AddExpressionColumn("dtLine","Extension","Float","Qty*Price")
+
+'F.Intrinsic.String.Build("select record_no, sum(qty_shipped) from GAB_5393_INVC_LINE where order_no = '{0}' and invoice <> '' and date_order = '{1}' group by record_no",V.Global.sOrderNo.Trim,V.Global.dateOrder.PervasiveDate,V.Local.sSQL)
+'F.Data.Dictionary.CreateFromSQL("dicQty","conx",V.Local.sSQL)
+'F.Data.Dictionary.SetDefaultReturn("dicQty",0)
+'F.Data.DataTable.FillFromDictionary("dtLine","dicQty","Line","QtyInvoiced")
+
+F.Intrinsic.Control.For(V.Local.i1,0,V.DataTable.dtLine.RowCount--,1)
+	F.Intrinsic.String.Build("select sum(qty_shipped) from GAB_5393_INVC_LINE where order_no = '{0}' and date_order = '{1}' and line_no = '{2}'",V.Global.sOrderNo.Trim,V.Global.dateOrder.PervasiveDate,V.DataTable.dtLine(V.Local.i1).Line!FieldValTrim,V.Local.sSQL)
+	F.ODBC.Connection!conx.ExecuteAndReturn(V.Local.sSQL,V.Local.fQtyInvoiced)
+	F.Intrinsic.Math.Add(V.Local.fQtyInvoiced,0,V.Local.fQtyInvoiced)
+	F.Intrinsic.Math.Sub(V.DataTable.dtLine(V.Local.i1).QtyOrder!FieldVal,V.Local.fQtyInvoiced,V.Local.fQty)
+	F.Data.DataTable.SetValue("dtLine",V.Local.i1,"QtyInvoiced",V.Local.fQtyInvoiced,"Qty",V.Local.fQty)
+F.Intrinsic.Control.Next(V.Local.i1)
+
+Gui.F_Order.GsGCLine.AddGridviewFromDatatable("gvLine","dtLine")
+Gui.F_Order.GsGCLine.MainView("gvLine")
+
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Flag_bom","visible",false)
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","bom_parent","visible",false)
+
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Line","HeaderHAlignment","Center")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Part","HeaderHAlignment","Center")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Description","HeaderHAlignment","Center")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Price","HeaderHAlignment","Center")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","QtyOrder","HeaderHAlignment","Center")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","QtyInvoiced","HeaderHAlignment","Center")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Qty","HeaderHAlignment","Center")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Extension","HeaderHAlignment","Center")
+
+
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Line","CellHAlignment","Center")
+
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Line","MinWidth","60")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Part","MinWidth","130")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Description","MinWidth","200")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Price","MinWidth","120")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","QtyOrder","MinWidth","120")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","QtyInvoiced","MinWidth","120")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Qty","MinWidth","120")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Extension","MinWidth","150")
+
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Price","DisplayCustomNumeric","##,###,##0.00000")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","QtyOrder","DisplayCustomNumeric","##,###,##0")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","QtyInvoiced","DisplayCustomNumeric","##,###,##0")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Qty","DisplayCustomNumeric","##,###,##0")
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Extension","DisplayCustomNumeric","##,###,##0.00000")
+
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Qty","AllowEdit",True)
+Gui.F_Order.GsGCLine.SetColumnProperty("gvLine","Qty","ReadOnly",False)
+Program.Sub.LoadSOLines.End
+
+Program.Sub.cmdSave_Click.Start
+V.Local.fPrice.Declare
+V.Local.i1.Declare
+V.Local.sSQL.Declare
+
+F.Data.DataTable.Compute("dtLine","SUM(Extension)","",V.Local.fPrice)
+
+V.Passed.000007.Set(1)
+V.Passed.000009.Set(V.Local.fPrice)
+
+F.Intrinsic.Control.For(V.Local.i1,0,V.DataTable.dtLine.RowCount--,1)
+	F.Intrinsic.Control.If(V.DataTable.dtLine(V.Local.i1).Qty!FieldVal,>,0)
+		F.Intrinsic.String.Build("select QTY_SHIPPED, PRICE,flag_bom,bom_parent from GAB_5393_INVC_LINE where order_no = '{0}' and invoice = '' and record_no = '{1}' and line_no = '{2}' and date_order = '{3}'",V.Global.sOrderNo.Trim,V.Global.sOrderLine.Trim,V.DataTable.dtLine(V.Local.i1).Line!FieldValTrim,V.Global.dateOrder.PervasiveDate,V.Local.sSQL)
+		F.ODBC.Connection!conx.OpenLocalRecordsetRW("rst",V.Local.sSQL)
+		F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF)
+			F.Intrinsic.String.Build("insert into GAB_5393_INVC_LINE(order_no,date_order,record_no,line_no,invoice,qty_shipped,price,part,flag_bom,bom_parent) values('{0}','{1}','{2}','{3}','',{4},{5},'{6}','{7}','{8}')",V.Global.sOrderNo.Trim,V.Global.dateOrder.PervasiveDate,V.Global.sOrderLine.Trim,V.DataTable.dtLine(V.Local.i1).Line!FieldValTrim,V.DataTable.dtLine(V.Local.i1).Qty!FieldVal,V.DataTable.dtLine(V.Local.i1).Price!FieldVal,V.DataTable.dtLine(V.Local.i1).Part!FieldValTrim,V.DataTable.dtLine(V.Local.i1).Flag_BOM!FieldValTrim,V.DataTable.dtLine(V.Local.i1).BOM_Parent!FieldValTrim,V.Local.sSQL)
+			F.ODBC.Connection!conx.Execute(V.Local.sSQL)
+		F.Intrinsic.Control.Else
+			F.ODBC.conx!rst.Set!QTY_SHIPPED(V.DataTable.dtLine(V.Local.i1).Qty!FieldVal)
+			F.ODBC.conx!rst.Set!PRICE(V.DataTable.dtLine(V.Local.i1).Price!FieldVal)
+			F.ODBC.conx!rst.Set!flag_bom(V.DataTable.dtLine(V.Local.i1).flag_bom!FieldVal)
+			F.ODBC.conx!rst.Set!bom_parent(V.DataTable.dtLine(V.Local.i1).bom_parent!FieldVal)
+			F.ODBC.conx!rst.Update
+		F.Intrinsic.Control.EndIf
+		F.ODBC.conx!rst.Close
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.Next(V.Local.i1)
+
+F.Intrinsic.Control.CallSub(Unload)
+Program.Sub.cmdSave_Click.End
+
+Program.Sub.CheckandDelete.Start
+V.Local.sSQL.Declare
+V.Local.bExist.Declare
+
+F.ODBC.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+
+'Check if custom table exists
+F.ODBC.Connection!conx.TableExists("GAB_5393_INVC_LINE",V.Local.bExist)
+F.Intrinsic.Control.If(V.Local.bExist,=,False)
+	F.ODBC.Connection!Conx.Execute("CREATE TABLE GAB_5393_INVC_LINE ( ORDER_NO CHAR(7) NOT NULL, DATE_ORDER DATE NOT NULL, RECORD_NO CHAR(4) NOT NULL, LINE_NO CHAR(4) NOT NULL, INVOICE CHAR(6), PART CHAR(20), QTY_SHIPPED NUMERIC(13,4), PRICE NUMERIC(12,5), FLAG_BOM CHAR(1), BOM_PARENT CHAR(4) );")
+	F.ODBC.Connection!Conx.Execute("ALTER TABLE GAB_5393_INVC_LINE ADD CONSTRAINT PK_ORDER_NO PRIMARY KEY  ( ORDER_NO, DATE_ORDER, RECORD_NO, LINE_NO ) USING 0;")
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.LPad(V.Passed.000060,"0",7,V.Global.sOrderNo)
+F.Intrinsic.String.LPad(V.Passed.000051,"0",3,V.Global.sOrderLine)
+F.Intrinsic.String.Concat(V.Global.sOrderLine,"0",V.Global.sOrderLine)
+
+F.Intrinsic.String.Build("select date_order from v_order_header where order_no = '{0}'",V.Global.sOrderNo.Trim,V.Local.sSQL)
+F.ODBC.Connection!conx.OpenLocalRecordsetRO("rst",V.Local.sSQL)
+V.Global.dateOrder.Set(V.ODBC.conx!rst.FieldVal!date_order)
+F.ODBC.conx!rst.Close
+
+F.Intrinsic.String.Build("select * from GAB_5393_INVC_LINE where order_no = '{0}' and invoice = '' and record_no = '{1}' and date_order = '{2}'",V.Global.sOrderNo.Trim,V.Global.sOrderLine.Trim,V.Global.dateOrder.PervasiveDate,V.Local.sSQL)
+F.ODBC.Connection!conx.OpenLocalRecordsetRO("rst",V.Local.sSQL)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+	F.Intrinsic.String.Build("delete from GAB_5393_INVC_LINE where order_no = '{0}' and record_no = '{1}' and date_order = '{2}'",V.Global.sOrderNo.Trim,V.Global.sOrderLine.Trim,V.Global.dateOrder.PervasiveDate,V.Local.sSQL)
+	F.ODBC.Connection!conx.Execute(V.Local.sSQL)
+F.Intrinsic.Control.EndIf
+F.ODBC.conx!rst.Close
+F.ODBC.Connection!conx.Close
+Program.Sub.CheckandDelete.End
+
+Program.Sub.GsGCLine_CellValueChanged.Start
+V.Local.fOpenQty.Declare
+V.Local.fQty.Declare
+
+V.Local.fQty.Set(V.Args.Value)
+
+F.Intrinsic.Math.Sub(V.DataTable.dtLine(V.Args.RowIndex).QtyOrder!FieldVal,V.DataTable.dtLine(V.Args.RowIndex).QtyInvoiced!FieldVal,V.Local.fOpenQty)
+
+F.Intrinsic.Control.If(V.Local.fQty,>,V.Local.fOpenQty)
+	F.Data.DataTable.SetValue("dtLine",V.Args.RowIndex,"Qty",V.Local.fOpenQty)
+F.Intrinsic.Control.EndIf
+Program.Sub.GsGCLine_CellValueChanged.End
+
+Program.Sub.UpdateInvoiceNo.Start
+V.Local.i1.Declare
+V.Local.sBatch.Declare
+V.Local.sSQL.Declare
+V.Local.i2.Declare
+V.Local.fQtyInvoiced.Declare
+V.Local.fPrice.Declare
+V.Local.bExist.Declare
+
+F.ODBC.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+
+'Check if custom table exists
+F.ODBC.Connection!conx.TableExists("GAB_5393_INVC_LINE",V.Local.bExist)
+F.Intrinsic.Control.If(V.Local.bExist,=,False)
+	F.ODBC.Connection!Conx.Execute("CREATE TABLE GAB_5393_INVC_LINE ( ORDER_NO CHAR(7) NOT NULL, DATE_ORDER DATE NOT NULL, RECORD_NO CHAR(4) NOT NULL, LINE_NO CHAR(4) NOT NULL, INVOICE CHAR(6), PART CHAR(20), QTY_SHIPPED NUMERIC(13,4), PRICE NUMERIC(12,5), FLAG_BOM CHAR(1), BOM_PARENT CHAR(4) );")
+	F.ODBC.Connection!Conx.Execute("ALTER TABLE GAB_5393_INVC_LINE ADD CONSTRAINT PK_ORDER_NO PRIMARY KEY  ( ORDER_NO, DATE_ORDER, RECORD_NO, LINE_NO ) USING 0;")
+F.Intrinsic.Control.EndIf
+
+V.Local.sBatch.Set(V.Passed.009000)
+
+F.Intrinsic.String.Build("select order_no as SO, order_rec as Line, invoice as Invoice, date_order as SODate from v_shipment_lines where ivc_batch = '{0}' and line_type = 'P' and qty_shipped = 1",V.Local.sBatch.Trim,V.Local.sSQL)
+F.Data.DataTable.CreateFromSQL("dtInvc","conx",V.Local.sSQL)
+F.Intrinsic.Control.For(V.Local.i1,0,V.DataTable.dtInvc.RowCount--,1)
+'	F.Intrinsic.String.Build("select invoice from GAB_5393_INVC_LINE where order_no = '{0}' and record_no = '{1}' and date_order = '{2}'",V.DataTable.dtInvc(V.Local.i1).SO!FieldValTrim,V.DataTable.dtInvc(V.Local.i1).Line!FieldValTrim,V.DataTable.dtInvc(V.Local.i1).SODate!FieldValPervasiveDate,V.Local.sSQL)
+	F.Intrinsic.String.Build("select BOM_Parent, Sum(Price*Qty_Shipped) as Price from GAB_5393_INVC_LINE where order_no = '{0}' and record_no = '{1}' and date_order = '{2}' group by BOM_Parent ",V.DataTable.dtInvc(V.Local.i1).SO!FieldValTrim,V.DataTable.dtInvc(V.Local.i1).Line!FieldValTrim,V.DataTable.dtInvc(V.Local.i1).SODate!FieldValPervasiveDate,V.Local.sSQL)
+'	F.ODBC.Connection!conx.OpenLocalRecordsetRW("rst",V.Local.sSQL)
+	F.Data.DataTable.CreateFromSQL("dtPrice","conx",V.Local.sSQL)
+	F.Intrinsic.Control.If(V.DataTable.dtPrice.RowCount,<>,0)
+		F.Intrinsic.String.Build("update GAB_5393_INVC_LINE set invoice = '{3}' where order_no = '{0}' and record_no = '{1}' and date_order = '{2}'",V.DataTable.dtInvc(V.Local.i1).SO!FieldValTrim,V.DataTable.dtInvc(V.Local.i1).Line!FieldValTrim,V.DataTable.dtInvc(V.Local.i1).SODate!FieldValPervasiveDate,V.DataTable.dtInvc(V.Local.i1).Invoice!FieldValTrim,V.Local.sSQL)
+		F.ODBC.Connection!conx.Execute(V.Local.sSQL)
+	F.Intrinsic.Control.For(V.Local.i2,0,V.DataTable.dtPrice.RowCount--,1)
+		F.Intrinsic.Control.If(V.DataTable.dtPrice(V.Local.i2).BOM_Parent!FieldValTrim,<>,"")
+			F.Intrinsic.String.Build("select sum(qty_shipped) from GAB_5393_INVC_LINE where order_no = '{0}' and line_no = '{1}' and date_order = '{2}'",V.DataTable.dtInvc(V.Local.i1).SO!FieldValTrim,V.DataTable.dtPrice(V.Local.i2).BOM_Parent!FieldValTrim,V.DataTable.dtInvc(V.Local.i1).SODate!FieldValPervasiveDate,V.Local.sSQL)
+			F.ODBC.Connection!conx.ExecuteAndReturn(V.Local.sSQL,V.Local.fQtyInvoiced)
+			F.Intrinsic.Math.Div(V.DataTable.dtPrice(V.Local.i2).Price!FieldValFloat,V.Local.fQtyInvoiced,V.Local.fPrice)
+			F.Intrinsic.String.Build("update GAB_5393_INVC_LINE set price = '{3}' where order_no = '{0}' and line_no = '{1}' and date_order = '{2}'",V.DataTable.dtInvc(V.Local.i1).SO!FieldValTrim,V.DataTable.dtPrice(V.Local.i2).BOM_Parent!FieldValTrim,V.DataTable.dtInvc(V.Local.i1).SODate!FieldValPervasiveDate,V.Local.fPrice,V.Local.sSQL)
+			F.ODBC.Connection!conx.Execute(V.Local.sSQL)
+		F.Intrinsic.Control.EndIf	
+	F.Intrinsic.Control.Next(V.Local.i2)		
+	F.Intrinsic.Control.EndIf
+'	F.ODBC.conx!rst.Close
+F.Data.DataTable.Close("dtPrice")
+F.Intrinsic.Control.Next(V.Local.i1)
+
+F.Data.DataTable.Close("dtInvc")
+
+F.Intrinsic.UI.Msgbox("Update completed")
+
+F.ODBC.Connection!conx.Close
+Program.Sub.UpdateInvoiceNo.End
+
+Program.Sub.BIReportCheck.Start
+V.Local.bProcess.Declare
+V.Local.iReportID.Declare
+V.Local.sBIParam.Declare
+V.Local.sBIParamVal.Declare
+V.Local.sProgram.Declare
+V.Local.sSQL.Declare
+V.Local.bExist.Declare
+
+F.Intrinsic.Control.If(V.Passed.009001,=,"000055")
+	V.Local.bProcess.Set(True)
+F.Intrinsic.Control.ElseIf(V.Passed.009001,=,"000056")
+	V.Local.bProcess.Set(True)
+F.Intrinsic.Control.ElseIf(V.Passed.009001,=,"000057")
+	V.Local.bProcess.Set(True)
+F.Intrinsic.Control.ElseIf(V.Passed.009001,=,"000108")
+	V.Local.bProcess.Set(True)
+F.Intrinsic.Control.Else
+	V.Local.bProcess.Set(False)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.If(V.Local.bProcess)
+	F.ODBC.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+	
+	'Check if custom table exists
+	F.ODBC.Connection!conx.TableExists("GAB_5393_INVC_LINE",V.Local.bExist)
+	F.Intrinsic.Control.If(V.Local.bExist,=,False)
+		F.ODBC.Connection!Conx.Execute("CREATE TABLE GAB_5393_INVC_LINE ( ORDER_NO CHAR(7) NOT NULL, DATE_ORDER DATE NOT NULL, RECORD_NO CHAR(4) NOT NULL, LINE_NO CHAR(4) NOT NULL, INVOICE CHAR(6), PART CHAR(20), QTY_SHIPPED NUMERIC(13,4), PRICE NUMERIC(12,5), FLAG_BOM CHAR(1), BOM_PARENT CHAR(4) );")
+		F.ODBC.Connection!Conx.Execute("ALTER TABLE GAB_5393_INVC_LINE ADD CONSTRAINT PK_ORDER_NO PRIMARY KEY  ( ORDER_NO, DATE_ORDER, RECORD_NO, LINE_NO ) USING 0;")
+	F.Intrinsic.Control.EndIf
+
+	F.Intrinsic.String.Build("select invoice_no as Invoice, so_num as SO, date_order as SODate, line_item as Line from v_prt_laser_invoice where terminal_no = '{0}' and line_type = 'L' order by key_seq",V.Caller.Terminal,V.Local.sSQL)
+	F.Data.DataTable.CreateFromSQL("dtInvc","conx",V.Local.sSQL)
+
+	F.Intrinsic.Control.If(V.DataTable.dtInvc.RowCount,=,1)
+		F.Intrinsic.String.Build("select * from GAB_5393_INVC_LINE where order_no = '{0}' and invoice = '{3}' and record_no = '{1}' and date_order = '{2}'",V.DataTable.dtInvc(0).SO!FieldValTrim,V.DataTable.dtInvc(0).Line!FieldValTrim,V.DataTable.dtInvc(0).SODate!FieldValPervasiveDate,V.DataTable.dtInvc(0).Invoice!FieldValTrim,V.Local.sSQL)
+		F.ODBC.Connection!conx.OpenLocalRecordsetRO("rst",V.Local.sSQL)
+		F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,False)
+
+			F.Global.BI.GetIDFromName("GAB_5393_PROGRESS_INVOICE.rpt",V.Local.iReportID)
+
+			F.Intrinsic.Control.If(V.Local.iReportID,=,-1)
+				F.Intrinsic.UI.Msgbox("Custom progress billing invoice form has not been setup. Please tell your administrator to setup the report.")
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.Split("Terminal*!*REPORTID*!*PROGRAM*!*PRTORD","*!*",V.Local.sBIParam)
+				F.Intrinsic.String.Build("ORD1LZBI-{0}-{1}",V.Passed.009001,V.Caller.Terminal,V.Local.sProgram)
+				F.Intrinsic.String.Concat(V.Caller.Terminal,"*!*",V.Passed.009001,"*!*",V.Local.sProgram,"*!*","N",V.Local.sBIParamVal)
+				F.Intrinsic.String.Split(V.Local.sBIParamVal,"*!*",V.Local.sBIParamVal)
+				F.Global.BI.PrintReport(V.Local.iReportID,16,V.Local.sBIParam,V.Local.sBIParamVal,"GSView",True)
+			F.Intrinsic.Control.EndIf
+
+			V.Passed.CANCEL.Set(1)
+		F.Intrinsic.Control.EndIf
+		F.ODBC.conx!rst.Close
+	F.Intrinsic.Control.EndIf
+
+	F.Data.DataTable.Close("dtInvc")
+
+	F.ODBC.Connection!conx.Close
+F.Intrinsic.Control.EndIf
+Program.Sub.BIReportCheck.End
+
+Program.Sub.Comments.Start
+${$0$}$$}$$}$12:00:00 AM$}$False
+${$5$}$2.0.0.0$}$2
+${$6$}$tdjohan$}$20230811095017640$}$8rAQhOSvlohpQhMDm1j544LwmwXnRbkhFcPy/T2N/00mW8BZ57Mg5lV5Eq1YcwFVfRiqWgtuj1g=
+Program.Sub.Comments.End
